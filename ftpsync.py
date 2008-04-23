@@ -9,11 +9,12 @@ Homepage: http://ftpsync2d.googlecode.com
 # Created: April 2008
 # License: BSD
 
-__version__ = '1.0'
+__version__ = '1.1-svn'
 
 import sys
 import time
 import os
+import shutil
 from urlparse import urlparse
 from getpass import getpass
 from ftplib import FTP, error_perm
@@ -21,10 +22,14 @@ import cPickle as pickle
 from cStringIO import StringIO
 from optparse import OptionParser
 
+trash_dir = '.trash_local'
+ftp_trash_dir = '.trash_remote'
+
 def ignore_filename(filename):
     root, ext = os.path.splitext(filename)
+    basename = os.path.basename(filename)
     if ext in ['.pyc', '.pyo', '.backup', '.aux'] \
-           or ext.endswith('~') or ext.endswith('#'):
+           or ext.endswith('~') or ext.endswith('#') or basename.startswith('.'):
         return True
     return False
 
@@ -32,6 +37,8 @@ def fix_dirs(dirs):
     if 'CVS' in dirs: dirs.remove('CVS')
     if '.svn' in dirs: dirs.remove('.svn')
     if '.bzr' in dirs: dirs.remove('.bzr')
+    if trash_dir in dirs: dirs.remove(trash_dir)
+    if ftp_trash_dir in dirs: dirs.remove(ftp_trash_dir)
 
 class FtpSession(object):
 
@@ -273,7 +280,7 @@ class FtpSession(object):
             if mtime==0:
                 #skip directories
                 continue
-            if os.path.basename(rfn)=='.listing':
+            if os.path.basename(rfn).startswith('.'):
                 continue
             assert rfn[n:n+1] in ['/',''],``rfn,n``
             fn = rfn[n+1:]
@@ -364,6 +371,62 @@ class FtpSession(object):
             sys.stdout.write(' ok\n')
         return 1
 
+    def remove(self, filename, verbose=True):
+        fullname = self.abspath(filename)
+        if verbose:
+            sys.stdout.write('<removing %r..' % (filename))
+        try:
+            self.ftp.delete(fullname)
+        except error_perm, msg:
+            if verbose:
+                sys.stdout.write('FAILED: %s>' % (msg))
+            else:
+                sys.stderr.write('FAILED to remove %r: %s\n' % (filename, msg))
+            return
+        dname = os.path.dirname(fullname)
+        lst = self.ftp.nlst(dname)
+        if '.listing' in lst:
+            listing = os.path.join(dname, '.listing')
+            if verbose:
+                sys.stdout.write('<removing %r>' % (listing))
+            self.ftp.delete(listing)
+        if verbose:
+            sys.stdout.write('ok>')
+
+    def remove_directory(self, path, verbose=True):
+        fullname = self.abspath(path)
+        if verbose:
+            sys.stdout.write('<removing %r..' % (path))
+        lst = self.ftp.nlst(fullname)
+        for n in lst:
+            if n in ['.', '..']:
+                continue
+            fn = os.path.join(fullname, n)
+            mtime = self.get_mtime(fn)
+            if mtime==0:
+                self.remove_directory(fn, verbose=verbose)
+            elif mtime:
+                if verbose:
+                    sys.stdout.write('<removing %r>' % (fn))
+                self.ftp.delete(fn)
+        try:
+            self.ftp.rmd(fullname)
+        except error_perm, msg:
+            if verbose:
+                sys.stdout.write('FAILED: %s>' % (msg))
+            else:
+                sys.stderr.write('FAILED to remove %r: %s\n' % (path, msg))
+            return
+        dname = os.path.dirname(fullname)
+        lst = self.ftp.nlst(dname)
+        if '.listing' in lst:
+            listing = os.path.join(dname, '.listing')
+            if verbose:
+                sys.stdout.write('<removing %r>' % (listing))
+            self.ftp.delete(listing)
+        if verbose:
+            sys.stdout.write('ok>')
+    
 def get_local_files(local_root, verbose=True):
     r = {}
     wd = os.path.abspath(os.path.normpath(local_root))
@@ -381,7 +444,7 @@ def get_local_files(local_root, verbose=True):
             #print fn, mtime
     return r
 
-def compute_task(local_files, remote_files, mtime_tol=5):
+def compute_task(local_files, remote_files, remove_paths, mtime_tol=5):
     """ Return (download_list, upload_list, new_upload_list).
 
     The ``local_files`` and ``remote_files`` are dictionaries of
@@ -397,8 +460,23 @@ def compute_task(local_files, remote_files, mtime_tol=5):
     for considering the local and remote files to have equal
     modification times. Default is 5 seconds.
     """
-    download_list, upload_list, new_upload_list = [], [], []
+    download_list, upload_list, new_upload_list, remove_list = [], [], [], []
+    remove_dir_list = []
+    for path in remove_paths:
+        if path in remote_files:
+            remove_list.append(path)
+        elif path in local_files:
+            remove_list.append(path)
+        else:
+            flag = False
+            for fn, mt in remote_files.items():
+                if fn.startswith(path):
+                    flag = True
+                    remove_list.append(fn)
+            remove_dir_list.append(path)
     for filename, rmtime in remote_files.items():
+        if filename in remove_list:
+            continue
         if filename in local_files:
             lmtime = local_files[filename]
             #print filename, rmtime, lmtime, rmtime-lmtime
@@ -411,10 +489,12 @@ def compute_task(local_files, remote_files, mtime_tol=5):
         else:
             download_list.append(filename)
     for filename, lmtime in local_files.items():
+        if filename in remove_list:
+            continue
         if filename in remote_files:
             continue
         new_upload_list.append(filename)
-    return sorted(download_list), sorted(upload_list), sorted(new_upload_list)
+    return sorted(download_list), sorted(upload_list), sorted(new_upload_list), sorted(remove_list), sorted(remove_dir_list)
 
 def main():
     usage = "usage: %prog [options] <remote path> <local path>"
@@ -447,6 +527,9 @@ Remote path must be given in the following form:
     parser.add_option("-l", "--listing", dest="update_listing",
                       action="store_true", default=False,
                       help="update remote .listing files")
+    parser.add_option("-r", "--remove", dest="remove_paths",
+                      default=[], action="append",
+                      help="remove specified files and directories")
     
     (options, args) = parser.parse_args()
     if len(args)!=2:
@@ -460,7 +543,51 @@ Remote path must be given in the following form:
     session.skip_dirs.extend(options.skip_path)
     remote_files = session.get_files(update_listing=options.update_listing)
     
-    download_list, upload_list, new_upload_list = compute_task(local_files, remote_files)
+    download_list, upload_list, new_upload_list, remove_list, remove_dir_list = compute_task(local_files, remote_files, options.remove_paths)
+
+    removed_files = 0
+    for path in remove_list:
+        lpath = os.path.join(local_path, path)
+        if os.path.exists(lpath):
+            print 'moving %r to %r' % (lpath, trash_dir)
+            target = os.path.join(trash_dir, lpath)
+            target_dir = os.path.dirname(target)
+            if not os.path.exists(target_dir):
+                os.makedirs(target_dir)
+            if os.path.exists(target):
+                os.remove(target)
+            shutil.move(lpath, target)
+        mtime = session.get_mtime(path)
+        if mtime:
+            rpath = session.abspath(path)
+            print 'moving %r to %r' % (rpath, ftp_trash_dir)
+            target = os.path.join(ftp_trash_dir, rpath[1:] if rpath.startswith('/') else rpath)
+            target_dir = os.path.dirname(target)
+            if not os.path.exists(target_dir):
+                os.makedirs(target_dir)
+            status = session.download(path, target)
+            if status:
+                session.remove(path)
+
+    for path in remove_dir_list:
+        lpath = os.path.join(local_path, path)
+        if os.path.exists(lpath):
+            print 'moving %r to %r' % (lpath, trash_dir)
+            if not os.path.exists(trash_dir):
+                os.makedirs(trash_dir)
+            target = os.path.join(trash_dir, lpath)
+            if os.path.exists(target):
+                shutil.rmtree(target)
+            shutil.move(lpath, target)
+        mtime = session.get_mtime(path)
+        if mtime==0:
+            rpath = session.abspath(path)
+            print 'moving %r to %r' % (rpath, ftp_trash_dir)
+            target = os.path.join(ftp_trash_dir, rpath[1:] if rpath.startswith('/') else rpath)
+            target_dir = os.path.dirname(target)
+            if not os.path.exists(target_dir):
+                os.makedirs(target_dir)
+            session.remove_directory(path)
 
     downloaded_files = 0
     if options.download_files:
@@ -472,7 +599,10 @@ Remote path must be given in the following form:
     else:
         n = len(download_list)
         if n:
-            print "Skipping downloading",n,"files (see --download option)"
+            print "Skipping downloading",n,"files (see --download option):"
+            for filename in download_list:
+                print filename
+
 
     uploaded_files = 0
     if options.upload_files:
@@ -490,8 +620,9 @@ Remote path must be given in the following form:
     else:
         n = len(upload_list) + len(new_upload_list)
         if n:
-            print "Skipping uploading",n,"files (see --upload option)"
-            #print upload_list, new_upload_list
+            print "Skipping uploading",n,"files (see --upload option):"
+            for filename in upload_list + new_upload_list:
+                print filename
 
     if downloaded_files:
         print '# downloaded files:', downloaded_files
