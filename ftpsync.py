@@ -312,8 +312,11 @@ class FtpSession(object):
             sys.stdout.write(' ok [%s bytes]\n' % (os.path.getsize(target)))
         return 1
 
-    def makedirs(self, path, rm_local_listing = False, verbose=True):
+    def makedirs(self, path, rm_local_listing = False, verbose=True, _cache=[]):
         fullpath = self.abspath(path)
+        if fullpath in _cache:
+            return
+        _cache.append(fullpath)
         parent = os.path.dirname(fullpath)
         name = os.path.basename(fullpath)
         if parent!='/':
@@ -335,6 +338,7 @@ class FtpSession(object):
                 if verbose:
                     sys.stdout.write('<removing %r>' % (listing))
                 self.ftp.delete(listing)
+
 
     def upload(self, filename, source, mk_backup=True, verbose=True):
         fullname = self.abspath(filename)
