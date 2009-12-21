@@ -22,6 +22,13 @@ import cPickle as pickle
 from cStringIO import StringIO
 from optparse import OptionParser
 
+gtkpresence = None
+try:
+    import gnomekeyring
+    gtkpresence = True
+except ImportError:
+    pass
+
 trash_dir = '.trash_local'
 ftp_trash_dir = '.trash_remote'
 
@@ -78,7 +85,23 @@ class FtpSession(object):
     def password(self):
         n = self._password
         if n is None:
-            n = getpass('Enter password for ftp://%s@%s: ' % (self.username, self.server))
+            if gtkpresence:
+                try:
+                    items = gnomekeyring.find_items_sync(gnomekeyring.ITEM_NETWORK_PASSWORD, 
+                                                         {"server": self.server, 
+                                                          "protocol": "ftp", 
+                                                          "user": self.username})
+                    if len(items) > 0:
+                        n = items[0].secret
+                except gnomekeyring.DeniedError:
+                    sys.stderr.write("\nGnome keyring error : Access denied ..\n")
+                except gnomekeyring.NoMatchError:
+                    sys.stderr.write("\nGnome keyring error : No credential for %s..\n" % self.server)
+                except Exception, msg:
+                    sys.stderr.write("\nGnome keyring error : %s\n" % (msg))
+                sys.stderr.flush()
+            if n is None:
+                n = getpass('Enter password for ftp://%s@%s: ' % (self.username, self.server))
             self._password = n
         return n
 
@@ -87,9 +110,11 @@ class FtpSession(object):
         c = self._ftp
         if c is None:
             sys.stdout.write('<connecting to %s..' % (self.server))
+            sys.stdout.flush()
             self._ftp = c = FTP(self.server, self.username, self.password)
             self.clock_offset = self.clocksync()
             sys.stdout.write('clock offset: %s> ' % (self.clock_offset))
+            sys.stdout.flush()
         return c
 
     def abspath(self, *paths):
@@ -241,6 +266,7 @@ class FtpSession(object):
                     sys.stdout.flush()
         if verbose:
             sys.stdout.write('\n')
+            sys.stdout.flush()
         for path in dirs:
             r.update(**self.get_remote_files(path, verbose=verbose, listing=listing,
                                              update_listing=update_listing))
@@ -262,6 +288,7 @@ class FtpSession(object):
         mtime = rmtime - self.clock_offset
         if verbose:
             sys.stdout.write('<adjusting local mtime: %s secs>' % (lmtime - mtime))
+            sys.stdout.flush()
         os.utime(local, (mtime, mtime))
         #print local, mtime, rmtime, lmtime, int(os.path.getmtime(local))
 
@@ -291,6 +318,7 @@ class FtpSession(object):
     def download(self, filename, target, verbose=True):
         if verbose:
             sys.stdout.write('downloading %r..' % (filename))
+            sys.stdout.flush()
         fullname = self.abspath(filename)
         targetdir = os.path.dirname(target)
         if not os.path.exists(targetdir):
@@ -301,8 +329,10 @@ class FtpSession(object):
         except error_perm, msg:
             if verbose:
                 sys.stdout.write('FAILED: %s\n' % (msg))
+                sys.stdout.flush()
             else:
                 sys.stderr.write('FAILED to download %r: %s\n' % (filename, msg))
+                sys.stderr.flush()
             f.close()
             os.remove(target)
             return 0
@@ -310,6 +340,7 @@ class FtpSession(object):
         self.fix_local_mtime(filename, target)
         if verbose:
             sys.stdout.write(' ok [%s bytes]\n' % (os.path.getsize(target)))
+            sys.stdout.flush()
         return 1
 
     def makedirs(self, path, rm_local_listing = False, verbose=True, _cache=[]):
@@ -325,11 +356,13 @@ class FtpSession(object):
         if name and name not in lst:
             if verbose:
                 sys.stdout.write('<creating directory %r>' % (fullpath))
+                sys.stdout.flush()
             self.ftp.mkd(fullpath)
             if '.listing' in lst:
                 listing = os.path.join(parent, '.listing')
                 if verbose:
                     sys.stdout.write('<removing %r>' % (listing))
+                    sys.stdout.flush()
                 self.ftp.delete(listing)
         if rm_local_listing:
             lst = self.ftp.nlst(fullpath)
@@ -337,6 +370,7 @@ class FtpSession(object):
                 listing = os.path.join(fullpath, '.listing')
                 if verbose:
                     sys.stdout.write('<removing %r>' % (listing))
+                    sys.stdout.flush()
                 self.ftp.delete(listing)
 
 
@@ -344,10 +378,12 @@ class FtpSession(object):
         fullname = self.abspath(filename)
         if verbose:
             sys.stdout.write('uploading %r [%s]..' % (filename, os.path.getsize(source)))
+            sys.stdout.flush()
         self.makedirs(os.path.dirname(fullname), rm_local_listing=True, verbose=verbose)
         if mk_backup:
             if verbose:
                 sys.stdout.write('<creating %r>' % (filename+'.backup'))
+                sys.stdout.flush()
             self.ftp.rename(fullname, fullname + '.backup')
         f = open(source, 'rb')
         if verbose:
@@ -357,35 +393,43 @@ class FtpSession(object):
         except error_perm, msg:
             if verbose:
                 sys.stdout.write('FAILED: %s\n' % (msg))
+                sys.stdout.flush()
             else:
                 sys.stderr.write('FAILED to upload %r: %s\n' % (filename, msg))
+                sys.stderr.flush()
             f.close()
             if mk_backup:
                 if verbose:
                     sys.stdout.write('<restoring from %r>' % (filename+'.backup'))
+                    sys.stdout.flush()
                 self.ftp.rename(fullname + '.backup', fullname)
             return 0
         f.close()
         if mk_backup:
             if verbose:
                 sys.stdout.write('<cleaning up %r>' % (filename+'.backup'))
+                sys.stdout.flush()
             self.ftp.delete(fullname + '.backup')
         self.fix_local_mtime(filename, source)
         if verbose:
             sys.stdout.write(' ok\n')
+            sys.stdout.flush()
         return 1
 
     def remove(self, filename, verbose=True):
         fullname = self.abspath(filename)
         if verbose:
             sys.stdout.write('<removing %r..' % (filename))
+            sys.stdout.flush()
         try:
             self.ftp.delete(fullname)
         except error_perm, msg:
             if verbose:
                 sys.stdout.write('FAILED: %s>' % (msg))
+                sys.stdout.flush()
             else:
                 sys.stderr.write('FAILED to remove %r: %s\n' % (filename, msg))
+                sys.stderr.flush()
             return
         dname = os.path.dirname(fullname)
         lst = self.ftp.nlst(dname)
@@ -393,14 +437,17 @@ class FtpSession(object):
             listing = os.path.join(dname, '.listing')
             if verbose:
                 sys.stdout.write('<removing %r>' % (listing))
+                sys.stdout.flush()
             self.ftp.delete(listing)
         if verbose:
             sys.stdout.write('ok>')
+            sys.stdout.flush()
 
     def remove_directory(self, path, verbose=True):
         fullname = self.abspath(path)
         if verbose:
             sys.stdout.write('<removing %r..' % (path))
+            sys.stdout.flush()
         lst = self.ftp.nlst(fullname)
         for n in lst:
             if n in ['.', '..']:
@@ -412,14 +459,17 @@ class FtpSession(object):
             elif mtime:
                 if verbose:
                     sys.stdout.write('<removing %r>' % (fn))
+                    sys.stdout.flush()
                 self.ftp.delete(fn)
         try:
             self.ftp.rmd(fullname)
         except error_perm, msg:
             if verbose:
                 sys.stdout.write('FAILED: %s>' % (msg))
+                sys.stdout.flush()
             else:
                 sys.stderr.write('FAILED to remove %r: %s\n' % (path, msg))
+                sys.stderr.flush()
             return
         dname = os.path.dirname(fullname)
         lst = self.ftp.nlst(dname)
@@ -427,9 +477,11 @@ class FtpSession(object):
             listing = os.path.join(dname, '.listing')
             if verbose:
                 sys.stdout.write('<removing %r>' % (listing))
+                sys.stdout.flush()
             self.ftp.delete(listing)
         if verbose:
             sys.stdout.write('ok>')
+            sys.stdout.flush()
     
 def get_local_files(local_root, verbose=True):
     r = {}
