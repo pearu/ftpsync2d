@@ -25,6 +25,7 @@ from optparse import OptionParser
 gtkpresence = None
 try:
     import gnomekeyring
+    import gtk
     gtkpresence = True
 except ImportError:
     pass
