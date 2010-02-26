@@ -179,7 +179,7 @@ class FtpSession(object):
         self.ftp.retrbinary('RETR ' + filename, l.append, 8*1024)
         l = ''.join(l)
         func = lambda fn, mtime: (fn, int(mtime))
-        return dict([func(*line.split(':')) for line in l.splitlines()])
+        return dict([func(*line.rsplit(':', 1)) for line in l.splitlines()])
 
     def upload_listing_map(self, path, d):
         filename = self.abspath(path, '.listing')
