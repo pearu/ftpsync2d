@@ -88,6 +88,20 @@ class FtpSession(object):
         if n is None:
             if gtkpresence:
                 try:
+                    keyring = gnomekeyring.get_default_keyring_sync()
+                    keyring_info = gnomekeyring.get_info_sync(keyring)
+                    if keyring_info.get_is_locked():
+                        nof_tries = 3
+                        for i in range(nof_tries):
+                            keyring_pass = getpass('Enter password to unlock your default keychain: ')
+                            try:
+                                gnomekeyring.unlock_sync(keyring, keyring_pass)
+                                break
+                            except gnomekeyring.DeniedError:
+                                if i+1==nof_tries:
+                                    sys.stderr.write('\nFailed to unlock keychain (%s times)\n' % (i+1))
+                                else:
+                                    sys.stderr.write("\nInvalid password, try again...\n")
                     items = gnomekeyring.find_items_sync(gnomekeyring.ITEM_NETWORK_PASSWORD, 
                                                          {"server": self.server, 
                                                           "protocol": "ftp", 
