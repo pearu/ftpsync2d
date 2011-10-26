@@ -21,6 +21,7 @@ from ftplib import FTP, error_perm
 import cPickle as pickle
 from cStringIO import StringIO
 from optparse import OptionParser
+from posixpath import normpath
 
 gtkpresence = None
 try:
@@ -58,7 +59,7 @@ class FtpSession(object):
         self.server = o.hostname
         self._username = o.username
         self._password = o.password
-        remote_path = os.path.normpath(o[2] or '/')
+        remote_path = normpath(o[2] or '/')
         if remote_path.startswith('//'):
             remote_path = remote_path[1:]
         assert remote_path.startswith('/'),`remote_path`
@@ -510,7 +511,7 @@ def get_local_files(local_root, verbose=True):
                 continue
             fn = os.path.join(root, f)
             mtime = int(os.path.getmtime(fn))
-            assert fn[n:n+1] in ['/',''],`fn, n` 
+            assert fn[n:n+1] in ['/','','\\'],`fn, n` 
             r[fn[n+1:]] = mtime
             #print fn, mtime
     return r
