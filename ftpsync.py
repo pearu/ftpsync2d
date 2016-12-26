@@ -369,6 +369,9 @@ class FtpSession(object):
         if parent!='/':
             self.makedirs(parent, verbose=verbose)
         lst = self.ftp.nlst(parent)
+        
+        if lst and lst[0].startswith('/'):
+            name = '/' + name
         if name and name not in lst:
             if verbose:
                 sys.stdout.write('<creating directory %r>' % (fullpath))
