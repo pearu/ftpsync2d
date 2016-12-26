@@ -369,8 +369,7 @@ class FtpSession(object):
         if parent!='/':
             self.makedirs(parent, verbose=verbose)
         lst = self.ftp.nlst(parent)
-        
-        if lst and lst[0].startswith('/'):
+        if parent == '/':
             name = '/' + name
         if name and name not in lst:
             if verbose:
